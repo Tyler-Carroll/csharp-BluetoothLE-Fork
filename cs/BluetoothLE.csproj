@@ -115,6 +115,12 @@
     <Compile Include="Scenario2_Client.xaml.cs">
       <DependentUpon>Scenario2_Client.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Scenario4_UnityServer.xaml.cs">
+      <DependentUpon>Scenario4_UnityServer.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="Scenario5_ClientConnect.xaml.cs">
+      <DependentUpon>Scenario5_ClientConnect.xaml</DependentUpon>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">
@@ -151,6 +157,14 @@
       <Link>Scenario2_Client.xaml</Link>
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
+    </Page>
+    <Page Include="Scenario4_UnityServer.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Scenario5_ClientConnect.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
     </Page>
   </ItemGroup>
   <ItemGroup>
