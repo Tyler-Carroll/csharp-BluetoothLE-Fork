@@ -11,6 +11,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
 using System.Threading.Tasks;
 using Windows.Devices.Bluetooth;
@@ -33,6 +34,7 @@ namespace SDKTemplate
     // a specific characteristic.
     public sealed partial class Scenario2_Client : Page
     {
+        Stopwatch timer = new Stopwatch();
         private MainPage rootPage = MainPage.Current;
 
         private BluetoothLEDevice bluetoothLeDevice = null;
@@ -137,7 +139,7 @@ namespace SDKTemplate
                     {
                         ServiceList.Items.Add(new ComboBoxItem { Content = DisplayHelpers.GetServiceName(service), Tag = service });
                     }
-                    ConnectButton.Visibility = Visibility.Collapsed;
+                    //ConnectButton.Visibility = Visibility.Collapsed;
                     ServiceList.Visibility = Visibility.Visible;
                 }
                 else
@@ -212,6 +214,9 @@ namespace SDKTemplate
             {
                 registeredCharacteristic = selectedCharacteristic;
                 registeredCharacteristic.ValueChanged += Characteristic_ValueChanged;
+                /// ////////////////////////////////////////// value changed handler goes here
+                /// ///////////////////////////////////////////
+                /// /////////////////////////////////////////
                 subscribedForNotifications = true;
             }
         }
@@ -399,6 +404,7 @@ namespace SDKTemplate
                     {
                         AddValueChangedHandler();
                         rootPage.NotifyUser("Successfully subscribed for value changes", NotifyType.StatusMessage);
+                        timer.Start();
                     }
                     else
                     {
