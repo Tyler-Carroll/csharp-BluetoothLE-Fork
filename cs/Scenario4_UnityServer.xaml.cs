@@ -44,7 +44,7 @@ namespace SDKTemplate
                 streamSocketListener.ConnectionReceived += this.StreamSocketListener_ConnectionReceived;
 
                 // Start listening for incoming TCP connections on the specified port. You can specify any port that's not currently in use.
-                await streamSocketListener.BindEndpointAsync(new HostName("172.16.109.88"), PortNumber);
+                await streamSocketListener.BindEndpointAsync(new HostName("127.0.0.1"), PortNumber);
 
                 this.serverListBox.Items.Add($"Listening on {hostnames[2]}");
             }

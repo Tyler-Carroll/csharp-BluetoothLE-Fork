@@ -12,6 +12,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using System.Text;
 using System.Threading.Tasks;
 using Windows.Devices.Bluetooth;
@@ -23,6 +24,12 @@ using Windows.UI.Core;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Navigation;
+using Windows.Networking.Connectivity;
+using Windows.ApplicationModel.Core;
+using Windows.Networking.Sockets;
+using Windows.Networking;
+using System.Text;
+using System.IO;
 
 namespace SDKTemplate
 {
@@ -34,16 +41,19 @@ namespace SDKTemplate
     // a specific characteristic.
     public sealed partial class Scenario2_Client : Page
     {
-        Stopwatch timer = new Stopwatch();
+        private static DispatcherTimer timer;
+        
         private MainPage rootPage = MainPage.Current;
 
         private BluetoothLEDevice bluetoothLeDevice = null;
         private GattCharacteristic selectedCharacteristic;
-
+        NetworkAdapter adapter;
         // Only one registered characteristic at a time.
         private GattCharacteristic registeredCharacteristic;
         private GattPresentationFormat presentationFormat;
-
+        DataWriter writer;
+        FileStream F;
+        GattDeviceServicesResult result;
         #region Error Codes
         readonly int E_BLUETOOTH_ATT_WRITE_NOT_PERMITTED = unchecked((int)0x80650003);
         readonly int E_BLUETOOTH_ATT_INVALID_PDU = unchecked((int)0x80650004);
@@ -57,12 +67,32 @@ namespace SDKTemplate
             InitializeComponent();
         }
 
+        void DispatcherTimerSetup()
+        {
+            timer = new DispatcherTimer();
+            timer.Tick += TimerTick;
+            timer.Interval = new TimeSpan(0, 0, 15);
+            timer.Start();
+        }
+
+
         protected override void OnNavigatedTo(NavigationEventArgs e)
         {
+           //Task.Run(() => {
+               //F = new FileStream("C:\\Users\\Tyler\\Desktop\\Bluetooth_Low_Energy_sample\\log.txt", FileMode.OpenOrCreate,FileAccess.ReadWrite);
+           //});
+
             SelectedDeviceRun.Text = rootPage.SelectedBleDeviceName;
             if (string.IsNullOrEmpty(rootPage.SelectedBleDeviceId))
             {
-                ConnectButton.IsEnabled = false;
+                BluetoothConnect.IsEnabled = false;
+            }
+
+            adapter = null;
+            object networkAdapter;
+            if (CoreApplication.Properties.TryGetValue("adapter", out networkAdapter))
+            {
+                adapter = (NetworkAdapter)networkAdapter;
             }
         }
 
@@ -98,56 +128,12 @@ namespace SDKTemplate
             return true;
         }
 
+           
+
         private async void ConnectButton_Click()
         {
-            ConnectButton.IsEnabled = false;
-
-            if (!await ClearBluetoothLEDeviceAsync())
-            {
-                rootPage.NotifyUser("Error: Unable to reset state, try again.", NotifyType.ErrorMessage);
-                ConnectButton.IsEnabled = true;
-                return;
-            }
-
-            try
-            {
-                // BT_Code: BluetoothLEDevice.FromIdAsync must be called from a UI thread because it may prompt for consent.
-                bluetoothLeDevice = await BluetoothLEDevice.FromIdAsync(rootPage.SelectedBleDeviceId);
-
-                if (bluetoothLeDevice == null)
-                {
-                    rootPage.NotifyUser("Failed to connect to device.", NotifyType.ErrorMessage);
-                }
-            }
-            catch (Exception ex) when (ex.HResult == E_DEVICE_NOT_AVAILABLE)
-            {
-                rootPage.NotifyUser("Bluetooth radio is not on.", NotifyType.ErrorMessage);
-            }
-
-            if (bluetoothLeDevice != null)
-            {
-                // Note: BluetoothLEDevice.GattServices property will return an empty list for unpaired devices. For all uses we recommend using the GetGattServicesAsync method.
-                // BT_Code: GetGattServicesAsync returns a list of all the supported services of the device (even if it's not paired to the system).
-                // If the services supported by the device are expected to change during BT usage, subscribe to the GattServicesChanged event.
-                GattDeviceServicesResult result = await bluetoothLeDevice.GetGattServicesAsync(BluetoothCacheMode.Uncached);
-
-                if (result.Status == GattCommunicationStatus.Success)
-                {
-                    var services = result.Services;
-                    rootPage.NotifyUser(String.Format("Found {0} services", services.Count), NotifyType.StatusMessage);
-                    foreach (var service in services)
-                    {
-                        ServiceList.Items.Add(new ComboBoxItem { Content = DisplayHelpers.GetServiceName(service), Tag = service });
-                    }
-                    //ConnectButton.Visibility = Visibility.Collapsed;
-                    ServiceList.Visibility = Visibility.Visible;
-                }
-                else
-                {
-                    rootPage.NotifyUser("Device unreachable", NotifyType.ErrorMessage);
-                }
-            }
-            ConnectButton.IsEnabled = true;
+            
+            Connect();
         }
         #endregion
 
@@ -188,7 +174,6 @@ namespace SDKTemplate
 
                     // On error, act as if there are no characteristics.
                     characteristics = new List<GattCharacteristic>();
-
                 }
             }
             catch (Exception ex)
@@ -214,9 +199,7 @@ namespace SDKTemplate
             {
                 registeredCharacteristic = selectedCharacteristic;
                 registeredCharacteristic.ValueChanged += Characteristic_ValueChanged;
-                /// ////////////////////////////////////////// value changed handler goes here
-                /// ///////////////////////////////////////////
-                /// /////////////////////////////////////////
+                DispatcherTimerSetup();
                 subscribedForNotifications = true;
             }
         }
@@ -376,74 +359,92 @@ namespace SDKTemplate
             }
         }
 
+        public async void ServerConnect_Click()
+        {
+            if (CoreApplication.Properties.ContainsKey("clientSocket"))
+            {
+                rootPage.NotifyUser(
+                    "This step has already been executed. Please move to the next one.",
+                    NotifyType.ErrorMessage);
+                return;
+            }
+
+            // By default 'HostNameForConnect' is disabled and host name validation is not required. When enabling the
+            // text box validating the host name is required since it was received from an untrusted source
+            // (user input). The host name is validated by catching ArgumentExceptions thrown by the HostName
+            // constructor for invalid input.
+            HostName hostName;
+            try
+            {
+                hostName = new HostName("172.16.109.88");
+            }
+            catch (ArgumentException)
+            {
+                rootPage.NotifyUser("Error: Invalid host name.", NotifyType.ErrorMessage);
+                return;
+            }
+
+            StreamSocket socket = new StreamSocket();
+
+            // If necessary, tweak the socket's control options before carrying out the connect operation.
+            // Refer to the StreamSocketControl class' MSDN documentation for the full list of control options.
+            socket.Control.KeepAlive = false;
+
+            // Save the socket, so subsequent steps can use it.
+            CoreApplication.Properties.Add("clientSocket", socket);
+            try
+            {
+                if (adapter == null)
+                {
+                    rootPage.NotifyUser("Connecting to: " + hostName, NotifyType.StatusMessage);
+
+                    // Connect to the server (by default, the listener we created in the previous step).
+                    await socket.ConnectAsync(hostName, "5005");
+
+                    rootPage.NotifyUser("Connected", NotifyType.StatusMessage);
+                }
+                else
+                {
+                    rootPage.NotifyUser(" using network adapter " + adapter.NetworkAdapterId,
+                        NotifyType.StatusMessage);
+
+                    // Connect to the server (by default, the listener we created in the previous step)
+                    // limiting traffic to the same adapter that the user specified in the previous step.
+                    // This option will be overridden by interfaces with weak-host or forwarding modes enabled.
+                    await socket.ConnectAsync(
+                        hostName,
+                        "5005",
+                        SocketProtectionLevel.PlainSocket,
+                        adapter);
+
+                    writer = new DataWriter(socket.OutputStream);
+
+                    rootPage.NotifyUser(
+                        "Connected using network adapter " + adapter.NetworkAdapterId,
+                        NotifyType.StatusMessage);
+                    writer.WriteString("Hello From Client");
+                }
+
+                // Mark the socket as connected. Set the value to null, as we care only about the fact that the 
+                // property is set.
+                CoreApplication.Properties.Add("connected", null);
+            }
+            catch (Exception exception)
+            {
+                // If this is an unknown status it means that the error is fatal and retry will likely fail.
+                if (SocketError.GetStatus(exception.HResult) == SocketErrorStatus.Unknown)
+                {
+                    throw;
+                }
+
+                rootPage.NotifyUser("Connect failed with error: " + exception.Message, NotifyType.ErrorMessage);
+            }
+        }
+
         private bool subscribedForNotifications = false;
         private async void ValueChangedSubscribeToggle_Click()
         {
-            if (!subscribedForNotifications)
-            {
-                // initialize status
-                GattCommunicationStatus status = GattCommunicationStatus.Unreachable;
-                var cccdValue = GattClientCharacteristicConfigurationDescriptorValue.None;
-                if (selectedCharacteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Indicate))
-                {
-                    cccdValue = GattClientCharacteristicConfigurationDescriptorValue.Indicate;
-                }
-
-                else if (selectedCharacteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Notify))
-                {
-                    cccdValue = GattClientCharacteristicConfigurationDescriptorValue.Notify;
-                }
-
-                try
-                {
-                    // BT_Code: Must write the CCCD in order for server to send indications.
-                    // We receive them in the ValueChanged event handler.
-                    status = await selectedCharacteristic.WriteClientCharacteristicConfigurationDescriptorAsync(cccdValue);
-
-                    if (status == GattCommunicationStatus.Success)
-                    {
-                        AddValueChangedHandler();
-                        rootPage.NotifyUser("Successfully subscribed for value changes", NotifyType.StatusMessage);
-                        timer.Start();
-                    }
-                    else
-                    {
-                        rootPage.NotifyUser($"Error registering for value changes: {status}", NotifyType.ErrorMessage);
-                    }
-                }
-                catch (UnauthorizedAccessException ex)
-                {
-                    // This usually happens when a device reports that it support indicate, but it actually doesn't.
-                    rootPage.NotifyUser(ex.Message, NotifyType.ErrorMessage);
-                }
-            }
-            else
-            {
-                try
-                {
-                    // BT_Code: Must write the CCCD in order for server to send notifications.
-                    // We receive them in the ValueChanged event handler.
-                    // Note that this sample configures either Indicate or Notify, but not both.
-                    var result = await
-                            selectedCharacteristic.WriteClientCharacteristicConfigurationDescriptorAsync(
-                                GattClientCharacteristicConfigurationDescriptorValue.None);
-                    if (result == GattCommunicationStatus.Success)
-                    {
-                        subscribedForNotifications = false;
-                        RemoveValueChangedHandler();
-                        rootPage.NotifyUser("Successfully un-registered for notifications", NotifyType.StatusMessage);
-                    }
-                    else
-                    {
-                        rootPage.NotifyUser($"Error un-registering for notifications: {result}", NotifyType.ErrorMessage);
-                    }
-                }
-                catch (UnauthorizedAccessException ex)
-                {
-                    // This usually happens when a device reports that it support notify, but it actually doesn't.
-                    rootPage.NotifyUser(ex.Message, NotifyType.ErrorMessage);
-                }
-            }
+            Subscribe();
         }
 
         private async void Characteristic_ValueChanged(GattCharacteristic sender, GattValueChangedEventArgs args)
@@ -454,6 +455,10 @@ namespace SDKTemplate
             var message = $"Value at {DateTime.Now:hh:mm:ss.FFF}: {newValue}";
             await Dispatcher.RunAsync(CoreDispatcherPriority.Normal,
                 () => CharacteristicLatestValue.Text = message);
+            //await Windows.Storage.FileIO.WriteTextAsync(sampleFile, message);
+            byte[] bytes = Encoding.UTF8.GetBytes(message);
+            F.Write(bytes, 0, bytes.Length);
+
         }
 
         private string FormatValueByPresentation(IBuffer buffer, GattPresentationFormat format)
@@ -569,6 +574,199 @@ namespace SDKTemplate
             {
                 return data[1];
             }
+        }
+        async void Connect()
+        {
+
+            BluetoothConnect.IsEnabled = false;
+
+            if (!await ClearBluetoothLEDeviceAsync())
+            {
+                rootPage.NotifyUser("Error: Unable to reset state, try again.", NotifyType.ErrorMessage);
+                BluetoothConnect.IsEnabled = true;
+                return;
+            }
+
+            try
+            {
+                // BT_Code: BluetoothLEDevice.FromIdAsync must be called from a UI thread because it may prompt for consent.
+                bluetoothLeDevice = await BluetoothLEDevice.FromIdAsync(rootPage.SelectedBleDeviceId);
+
+                if (bluetoothLeDevice == null)
+                {
+                    rootPage.NotifyUser("Failed to connect to device.", NotifyType.ErrorMessage);
+                }
+            }
+            catch (Exception ex) when (ex.HResult == E_DEVICE_NOT_AVAILABLE)
+            {
+                rootPage.NotifyUser("Bluetooth radio is not on.", NotifyType.ErrorMessage);
+            }
+
+            if (bluetoothLeDevice != null)
+            {
+                // Note: BluetoothLEDevice.GattServices property will return an empty list for unpaired devices. For all uses we recommend using the GetGattServicesAsync method.
+                // BT_Code: GetGattServicesAsync returns a list of all the supported services of the device (even if it's not paired to the system).
+                // If the services supported by the device are expected to change during BT usage, subscribe to the GattServicesChanged event.
+                result = await bluetoothLeDevice.GetGattServicesAsync(BluetoothCacheMode.Uncached);
+
+                if (result.Status == GattCommunicationStatus.Success)
+                {
+                    var services = result.Services;
+                    rootPage.NotifyUser(String.Format("Found {0} services", services.Count), NotifyType.StatusMessage);
+                    foreach (var service in services)
+                    {
+                        ServiceList.Items.Add(new ComboBoxItem { Content = DisplayHelpers.GetServiceName(service), Tag = service });
+                    }
+                    //ConnectButton.Visibility = Visibility.Collapsed;
+                    ServiceList.Visibility = Visibility.Visible;
+                }
+                else
+                {
+                    rootPage.NotifyUser("Device unreachable", NotifyType.ErrorMessage);
+                }
+            }
+            BluetoothConnect.IsEnabled = true;
+        }
+
+        async void Reconnect()
+        {
+            bluetoothLeDevice = await BluetoothLEDevice.FromIdAsync(rootPage.SelectedBleDeviceId);
+
+            if (bluetoothLeDevice == null)
+            {
+                rootPage.NotifyUser("Failed to connect to device.", NotifyType.ErrorMessage);
+            }
+            result = await bluetoothLeDevice.GetGattServicesAsync(BluetoothCacheMode.Uncached);
+
+            if (result.Status == GattCommunicationStatus.Success)
+            {
+                var services = result.Services;
+                rootPage.NotifyUser(String.Format("Found {0} services", services.Count), NotifyType.StatusMessage);
+                foreach (var service in services)
+                {
+                    ServiceList.Items.Add(new ComboBoxItem { Content = DisplayHelpers.GetServiceName(service), Tag = service });
+                }
+                //ConnectButton.Visibility = Visibility.Collapsed;
+                ServiceList.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                rootPage.NotifyUser("Device unreachable", NotifyType.ErrorMessage);
+            }
+        }
+        async void Subscribe()
+        {
+            if (!subscribedForNotifications)
+            {
+                // initialize status
+                GattCommunicationStatus status = GattCommunicationStatus.Unreachable;
+                var cccdValue = GattClientCharacteristicConfigurationDescriptorValue.None;
+                if (selectedCharacteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Indicate))
+                {
+                    cccdValue = GattClientCharacteristicConfigurationDescriptorValue.Indicate;
+                }
+
+                else if (selectedCharacteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Notify))
+                {
+                    cccdValue = GattClientCharacteristicConfigurationDescriptorValue.Notify;
+                }
+
+                try
+                {
+                    // BT_Code: Must write the CCCD in order for server to send indications.
+                    // We receive them in the ValueChanged event handler.
+                    status = await selectedCharacteristic.WriteClientCharacteristicConfigurationDescriptorAsync(cccdValue);
+
+                    if (status == GattCommunicationStatus.Success)
+                    {
+                        AddValueChangedHandler();
+                        rootPage.NotifyUser("Successfully subscribed for value changes", NotifyType.StatusMessage);
+                        //TODO: create timer method here
+
+                    }
+                    else
+                    {
+                        rootPage.NotifyUser($"Error registering for value changes: {status}", NotifyType.ErrorMessage);
+                    }
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    // This usually happens when a device reports that it support indicate, but it actually doesn't.
+                    rootPage.NotifyUser(ex.Message, NotifyType.ErrorMessage);
+                }
+            }
+            else
+            {
+                try
+                {
+                    // BT_Code: Must write the CCCD in order for server to send notifications.
+                    // We receive them in the ValueChanged event handler.
+                    // Note that this sample configures either Indicate or Notify, but not both.
+                    var result = await
+                            selectedCharacteristic.WriteClientCharacteristicConfigurationDescriptorAsync(
+                                GattClientCharacteristicConfigurationDescriptorValue.None);
+                    if (result == GattCommunicationStatus.Success)
+                    {
+                        subscribedForNotifications = false;
+                        RemoveValueChangedHandler();
+                        rootPage.NotifyUser("Successfully un-registered for notifications", NotifyType.StatusMessage);
+                    }
+                    else
+                    {
+                        rootPage.NotifyUser($"Error un-registering for notifications: {result}", NotifyType.ErrorMessage);
+                    }
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    // This usually happens when a device reports that it support notify, but it actually doesn't.
+                    rootPage.NotifyUser(ex.Message, NotifyType.ErrorMessage);
+                }
+            }
+        }
+        async void ReSubscribe()
+        {
+            // initialize status
+            GattCommunicationStatus status = GattCommunicationStatus.Unreachable;
+            var cccdValue = GattClientCharacteristicConfigurationDescriptorValue.None;
+            if (selectedCharacteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Indicate))
+            {
+                cccdValue = GattClientCharacteristicConfigurationDescriptorValue.Indicate;
+            }
+
+            else if (selectedCharacteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Notify))
+            {
+                cccdValue = GattClientCharacteristicConfigurationDescriptorValue.Notify;
+            }
+
+            try
+            {
+                // BT_Code: Must write the CCCD in order for server to send indications.
+                // We receive them in the ValueChanged event handler.
+                status = await selectedCharacteristic.WriteClientCharacteristicConfigurationDescriptorAsync(cccdValue);
+
+                if (status == GattCommunicationStatus.Success)
+                {
+                    AddValueChangedHandler();
+                    rootPage.NotifyUser("Successfully subscribed for value changes", NotifyType.StatusMessage);
+                    //TODO: create timer method here
+
+                }
+                else
+                {
+                    rootPage.NotifyUser($"Error registering for value changes: {status}", NotifyType.ErrorMessage);
+                }
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                // This usually happens when a device reports that it support indicate, but it actually doesn't.
+                rootPage.NotifyUser(ex.Message, NotifyType.ErrorMessage);
+            }
+        }
+        void TimerTick(object sender, object e)
+        {
+            rootPage.NotifyUser("Reconnecting", NotifyType.StatusMessage);
+            Reconnect();
+            ReSubscribe();
         }
     }
 }
