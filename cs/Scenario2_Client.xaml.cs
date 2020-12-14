@@ -11,8 +11,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.Threading;
 using System.Text;
 using System.Threading.Tasks;
 using Windows.Devices.Bluetooth;
@@ -28,8 +26,7 @@ using Windows.Networking.Connectivity;
 using Windows.ApplicationModel.Core;
 using Windows.Networking.Sockets;
 using Windows.Networking;
-using System.Text;
-using System.IO;
+
 
 namespace SDKTemplate
 {
@@ -52,8 +49,10 @@ namespace SDKTemplate
         private GattCharacteristic registeredCharacteristic;
         private GattPresentationFormat presentationFormat;
         DataWriter writer;
-        FileStream F;
+        StreamSocket clientSocket = new StreamSocket();
+        HostName serverHost = new HostName("172.16.109.88");
         GattDeviceServicesResult result;
+        
         #region Error Codes
         readonly int E_BLUETOOTH_ATT_WRITE_NOT_PERMITTED = unchecked((int)0x80650003);
         readonly int E_BLUETOOTH_ATT_INVALID_PDU = unchecked((int)0x80650004);
@@ -361,47 +360,30 @@ namespace SDKTemplate
 
         public async void ServerConnect_Click()
         {
-            if (CoreApplication.Properties.ContainsKey("clientSocket"))
-            {
-                rootPage.NotifyUser(
-                    "This step has already been executed. Please move to the next one.",
-                    NotifyType.ErrorMessage);
-                return;
-            }
-
-            // By default 'HostNameForConnect' is disabled and host name validation is not required. When enabling the
-            // text box validating the host name is required since it was received from an untrusted source
-            // (user input). The host name is validated by catching ArgumentExceptions thrown by the HostName
-            // constructor for invalid input.
-            HostName hostName;
-            try
-            {
-                hostName = new HostName("172.16.109.88");
-            }
-            catch (ArgumentException)
-            {
-                rootPage.NotifyUser("Error: Invalid host name.", NotifyType.ErrorMessage);
-                return;
-            }
-
-            StreamSocket socket = new StreamSocket();
 
             // If necessary, tweak the socket's control options before carrying out the connect operation.
             // Refer to the StreamSocketControl class' MSDN documentation for the full list of control options.
-            socket.Control.KeepAlive = false;
+            try
+            {
+                clientSocket.Control.KeepAlive = true;
+            }
+            catch(InvalidOperationException e)
+            {
+                rootPage.NotifyUser(e.Message, NotifyType.ErrorMessage);
+            }
 
             // Save the socket, so subsequent steps can use it.
-            CoreApplication.Properties.Add("clientSocket", socket);
             try
             {
                 if (adapter == null)
                 {
-                    rootPage.NotifyUser("Connecting to: " + hostName, NotifyType.StatusMessage);
+                    rootPage.NotifyUser("Connecting to: " + serverHost, NotifyType.StatusMessage);
 
                     // Connect to the server (by default, the listener we created in the previous step).
-                    await socket.ConnectAsync(hostName, "5005");
+                    await clientSocket.ConnectAsync(serverHost, "5005");
 
                     rootPage.NotifyUser("Connected", NotifyType.StatusMessage);
+                    SendMessage(clientSocket, "Hello");
                 }
                 else
                 {
@@ -411,34 +393,35 @@ namespace SDKTemplate
                     // Connect to the server (by default, the listener we created in the previous step)
                     // limiting traffic to the same adapter that the user specified in the previous step.
                     // This option will be overridden by interfaces with weak-host or forwarding modes enabled.
-                    await socket.ConnectAsync(
-                        hostName,
+                    await clientSocket.ConnectAsync(
+                        serverHost,
                         "5005",
                         SocketProtectionLevel.PlainSocket,
                         adapter);
 
-                    writer = new DataWriter(socket.OutputStream);
 
                     rootPage.NotifyUser(
                         "Connected using network adapter " + adapter.NetworkAdapterId,
                         NotifyType.StatusMessage);
-                    writer.WriteString("Hello From Client");
+                    
                 }
 
                 // Mark the socket as connected. Set the value to null, as we care only about the fact that the 
                 // property is set.
                 CoreApplication.Properties.Add("connected", null);
+
             }
             catch (Exception exception)
             {
                 // If this is an unknown status it means that the error is fatal and retry will likely fail.
                 if (SocketError.GetStatus(exception.HResult) == SocketErrorStatus.Unknown)
                 {
-                    throw;
+                    rootPage.NotifyUser("Unexpected failure, retry?", NotifyType.ErrorMessage);
                 }
 
                 rootPage.NotifyUser("Connect failed with error: " + exception.Message, NotifyType.ErrorMessage);
             }
+            
         }
 
         private bool subscribedForNotifications = false;
@@ -456,8 +439,8 @@ namespace SDKTemplate
             await Dispatcher.RunAsync(CoreDispatcherPriority.Normal,
                 () => CharacteristicLatestValue.Text = message);
             //await Windows.Storage.FileIO.WriteTextAsync(sampleFile, message);
-            byte[] bytes = Encoding.UTF8.GetBytes(message);
-            F.Write(bytes, 0, bytes.Length);
+            SendMessage(clientSocket, newValue);
+
 
         }
 
@@ -630,24 +613,25 @@ namespace SDKTemplate
 
         async void Reconnect()
         {
-            bluetoothLeDevice = await BluetoothLEDevice.FromIdAsync(rootPage.SelectedBleDeviceId);
 
             if (bluetoothLeDevice == null)
             {
                 rootPage.NotifyUser("Failed to connect to device.", NotifyType.ErrorMessage);
             }
-            result = await bluetoothLeDevice.GetGattServicesAsync(BluetoothCacheMode.Uncached);
+            try
+            {
+                result = await bluetoothLeDevice.GetGattServicesAsync(BluetoothCacheMode.Uncached);
+            }
+            catch(Exception e)
+            {
+                rootPage.NotifyUser("unhandled exception here: " + e.Message, NotifyType.ErrorMessage);
+                throw;
+            }
 
             if (result.Status == GattCommunicationStatus.Success)
             {
-                var services = result.Services;
-                rootPage.NotifyUser(String.Format("Found {0} services", services.Count), NotifyType.StatusMessage);
-                foreach (var service in services)
-                {
-                    ServiceList.Items.Add(new ComboBoxItem { Content = DisplayHelpers.GetServiceName(service), Tag = service });
-                }
-                //ConnectButton.Visibility = Visibility.Collapsed;
-                ServiceList.Visibility = Visibility.Visible;
+                rootPage.NotifyUser("Reconnection Success", NotifyType.StatusMessage);
+
             }
             else
             {
@@ -728,10 +712,6 @@ namespace SDKTemplate
             // initialize status
             GattCommunicationStatus status = GattCommunicationStatus.Unreachable;
             var cccdValue = GattClientCharacteristicConfigurationDescriptorValue.None;
-            if (selectedCharacteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Indicate))
-            {
-                cccdValue = GattClientCharacteristicConfigurationDescriptorValue.Indicate;
-            }
 
             else if (selectedCharacteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Notify))
             {
@@ -747,7 +727,7 @@ namespace SDKTemplate
                 if (status == GattCommunicationStatus.Success)
                 {
                     AddValueChangedHandler();
-                    rootPage.NotifyUser("Successfully subscribed for value changes", NotifyType.StatusMessage);
+                    rootPage.NotifyUser("Resubscribed", NotifyType.StatusMessage);
                     //TODO: create timer method here
 
                 }
@@ -768,5 +748,37 @@ namespace SDKTemplate
             Reconnect();
             ReSubscribe();
         }
+
+        async void SendMessage(StreamSocket clientSocket, string s)
+        {
+            using (var writer = new DataWriter(clientSocket.OutputStream))
+            {
+                writer.UnicodeEncoding = Windows.Storage.Streams.UnicodeEncoding.Utf8;
+                writer.ByteOrder = Windows.Storage.Streams.ByteOrder.LittleEndian;
+                
+                writer.MeasureString(s);
+                writer.WriteString(s);
+                try
+                {
+
+                    await writer.StoreAsync();
+                }
+                catch (Exception e)
+                {
+                    switch (SocketError.GetStatus(e.HResult))
+                    {
+                        case SocketErrorStatus.HostNotFound:
+                            // Handle HostNotFound Error
+                            throw;
+                        default:
+                            // If this is an unknown status it means that the error is fatal and retry will likely fail.
+                            throw;
+                    }
+                }
+                await writer.FlushAsync();
+                writer.DetachStream();
+            }
+        }
+
     }
 }
